@@ -1,0 +1,295 @@
+diff -rupN /media/shixiny/1466942866940C9C/linux-stable/arch/x86/entry/syscalls/syscall_64.tbl linux-stable/arch/x86/entry/syscalls/syscall_64.tbl
+--- /media/shixiny/1466942866940C9C/linux-stable/arch/x86/entry/syscalls/syscall_64.tbl	2018-03-07 02:41:20.000000000 -0800
++++ linux-stable/arch/x86/entry/syscalls/syscall_64.tbl	2018-03-24 15:58:43.165961844 -0700
+@@ -339,7 +339,9 @@
+ 330	common	pkey_alloc		sys_pkey_alloc
+ 331	common	pkey_free		sys_pkey_free
+ 332	common	statx			sys_statx
+-
++340	common  cs300_test		sys_cs300_test
++341	common  array_stats		sys_array_stats
++342	common	process_ancestors	sys_process_ancestors
+ #
+ # x32-specific system call numbers start at 512 to avoid cache impact
+ # for native 64-bit operation.
+diff -rupN /media/shixiny/1466942866940C9C/linux-stable/cs300/array_stats.c linux-stable/cs300/array_stats.c
+--- /media/shixiny/1466942866940C9C/linux-stable/cs300/array_stats.c	1969-12-31 16:00:00.000000000 -0800
++++ linux-stable/cs300/array_stats.c	2018-03-22 16:50:51.339380658 -0700
+@@ -0,0 +1,67 @@
++#include <linux/kernel.h>
++#include <linux/uaccess.h>
++#include <linux/module.h>
++#include "array_stats.h"
++#include <linux/errno.h>
++#include <linux/slab.h>
++
++
++
++asmlinkage long sys_array_stats(struct array_stats *stats, long data[], long size)
++{
++	long result = 0;
++	long counter = 0;
++	struct array_stats array;
++	array.min = 0;
++	array.max = 0;
++	array.sum = 0;
++
++	
++	
++	
++	if(size <= 0 )
++		return -EINVAL;
++	else
++	{
++		
++		while(counter < size)
++		{
++			long temp = 0;
++			if(copy_from_user(&temp, &data[counter], sizeof(data[counter]) ) !=0)
++			{
++				return -EFAULT;
++			}
++			else
++			{
++				if(counter ==0)
++				{
++					array.min = temp;
++					array.max = temp;
++				}
++				
++				if(counter > 0)
++				{
++					if(temp > array.max)
++						array.max = temp;
++					if(temp < array.min)
++						array.min = temp;
++				}
++			}
++
++			array.sum = (array.sum + temp);
++			
++			counter++;
++		
++		}
++	}
++
++	if(copy_to_user(stats, &array, sizeof(array)) != 0)
++	{
++		return -EFAULT;
++	}
++	else
++	{
++		return result ;
++	}
++	
++}
+diff -rupN /media/shixiny/1466942866940C9C/linux-stable/cs300/array_stats.h linux-stable/cs300/array_stats.h
+--- /media/shixiny/1466942866940C9C/linux-stable/cs300/array_stats.h	1969-12-31 16:00:00.000000000 -0800
++++ linux-stable/cs300/array_stats.h	2018-03-21 14:02:58.113480000 -0700
+@@ -0,0 +1,11 @@
++// Define the array_stats struct for the array_stats sys-call.
++#ifndef _ARRAY_STATS_H_
++#define _ARRAY_STATS_H_
++
++struct array_stats{
++    long min;
++    long max;
++    long sum;
++};
++
++#endif
+\ No newline at end of file
+diff -rupN /media/shixiny/1466942866940C9C/linux-stable/cs300/cs300_test.c linux-stable/cs300/cs300_test.c
+--- /media/shixiny/1466942866940C9C/linux-stable/cs300/cs300_test.c	1969-12-31 16:00:00.000000000 -0800
++++ linux-stable/cs300/cs300_test.c	2018-03-21 14:29:11.980280000 -0700
+@@ -0,0 +1,13 @@
++#include <linux/kernel.h>
++// Implement a HelloWorld system call
++// Argument is passed from call in user space.
++asmlinkage long sys_cs300_test(int argument)
++{
++	long result = 0;
++	printk("Hello World!\n");
++	printk("--syscall argument %d\n", argument);
++
++	result = argument + 1;
++	printk("--returning %d + 1 = %ld\n", argument, result);
++	return result;
++}
+\ No newline at end of file
+diff -rupN /media/shixiny/1466942866940C9C/linux-stable/cs300/Makefile linux-stable/cs300/Makefile
+--- /media/shixiny/1466942866940C9C/linux-stable/cs300/Makefile	1969-12-31 16:00:00.000000000 -0800
++++ linux-stable/cs300/Makefile	2018-03-22 17:01:37.357465040 -0700
+@@ -0,0 +1 @@
++obj-y := cs300_test.o array_stats.o process_ancestors.o
+diff -rupN /media/shixiny/1466942866940C9C/linux-stable/cs300/process_ancestors.c linux-stable/cs300/process_ancestors.c
+--- /media/shixiny/1466942866940C9C/linux-stable/cs300/process_ancestors.c	1969-12-31 16:00:00.000000000 -0800
++++ linux-stable/cs300/process_ancestors.c	2018-03-25 14:38:48.063271540 -0700
+@@ -0,0 +1,133 @@
++#include "process_ancestors.h"
++#include <linux/kernel.h>
++#include <linux/uaccess.h>
++#include <linux/module.h>
++#include <linux/errno.h>
++#include <linux/slab.h>
++#include <linux/sched.h>
++#include <linux/cred.h>
++#include <linux/list.h>
++#include <linux/uidgid.h> /*  header for call function to convert uid to long int */
++
++asmlinkage long sys_process_ancestors(struct process_info info_array[], long size, long *num_filled)
++{
++	
++	long count_filled = 0;
++	long count_children ;
++	long count_sibling ;
++	long result = 0;
++	
++	long name_index;
++
++	struct task_struct *task_temp = current;
++	
++	
++	struct list_head *children_head ;
++	struct list_head *sibling_head ;
++	
++
++	struct process_info pinfo;
++
++	pinfo.pid = 0;
++   pinfo.name[0] = '\0';
++   pinfo.state = 0;                  
++	pinfo.uid = 0;                     
++	pinfo.nvcsw = 0;                 
++   pinfo.nivcsw = 0;                 
++ 	pinfo.num_children = 0;            
++	pinfo.num_siblings = 0;
++
++	if(size <= 0)
++	{
++		return -EINVAL;
++	}
++	else
++	{
++		
++   		while( (task_temp->parent != task_temp) && (count_filled < size) )
++   		{
++
++   			name_index = 0;
++            count_children = 0;
++            count_sibling = 0;
++
++
++   			pinfo.pid = task_temp->pid;
++
++   			while(name_index < TASK_COMM_LEN)
++   			{
++   				pinfo.name[name_index] = task_temp->comm[name_index];
++   				name_index++;
++   			}
++   			
++   			pinfo.state = task_temp->state;
++   			pinfo.uid = task_temp->cred->uid.val;/*__kuid_val(task_temp->cred->uid);*/
++   			pinfo.nvcsw = task_temp->nvcsw;
++   			pinfo.nivcsw = task_temp->nivcsw;
++
++
++   			
++   		
++
++   			
++   			list_for_each(children_head, &(task_temp->children))
++   			{
++   				count_children++;
++   			}
++   			list_for_each(sibling_head , &(task_temp->sibling))
++   			{
++   				count_sibling++;
++   			}
++
++   			pinfo.num_children = count_children;
++            if(task_temp->pid != 1)
++            {
++               pinfo.num_siblings = count_sibling - 1;
++            }
++            else
++            {
++               pinfo.num_siblings =0;
++            }
++   			
++			
++
++
++   			if(copy_to_user(&info_array[count_filled] , &pinfo, sizeof(pinfo)) != 0 )
++   			{
++   				return -EFAULT;
++   			}
++   			else
++   			{
++   				/*if(copy_to_user(&size, &count_size, sizeof(count_size)) !=0)
++   				{
++   					return -EFAULT;
++   				}
++   				else
++   				{*/
++   					if(copy_to_user(num_filled, &count_filled, sizeof(count_filled)) != 0 )
++   					{
++   						return -EFAULT;
++   					}
++   					else
++   					{
++   						count_filled++;
++   					}
++   				
++   			}
++
++
++
++   			task_temp = task_temp->parent;
++
++   			/*print section to see result */
++   			printk("\n\nDisplay infomation about  entry %ld of preocess info array", count_filled);
++   			printk("\n");
++   			printk("%15s%21s%16s%16s%16s%16s%16s%16s\n", "Process ID", "Process Name", "Process State", "Process Uid", "Process nvcsw", "Process nivcsw", "# of children", "# of sibling");
++   			printk("%15ld%21s%16ld%16ld%16ld%16ld%16ld%16ld\n", pinfo.pid, pinfo.name, pinfo.state, pinfo.uid, pinfo.nvcsw, pinfo.nivcsw, pinfo.num_children, pinfo.num_siblings);
++   		}
++
++	}
++	
++
++   	return result;	        
++}
+\ No newline at end of file
+diff -rupN /media/shixiny/1466942866940C9C/linux-stable/cs300/process_ancestors.h linux-stable/cs300/process_ancestors.h
+--- /media/shixiny/1466942866940C9C/linux-stable/cs300/process_ancestors.h	1969-12-31 16:00:00.000000000 -0800
++++ linux-stable/cs300/process_ancestors.h	2018-03-22 18:02:07.688949329 -0700
+@@ -0,0 +1,16 @@
++#ifndef _PROCESS_ANCESTORS_H
++#define _PROCESS_ANCESTORS_H
++
++#define ANCESTOR_NAME_LEN 16
++struct process_info {
++    long pid;                     /* Process ID */
++    char name[ANCESTOR_NAME_LEN]; /* Program name of process */
++    long state;                   /* Current process state */
++    long uid;                     /* User ID of process owner */
++    long nvcsw;                   /* # voluntary context switches */
++    long nivcsw;                  /* # involuntary context switches */
++    long num_children;            /* # children process has */
++    long num_siblings;            /* # sibling process has */
++};
++
++#endif
+\ No newline at end of file
+diff -rupN /media/shixiny/1466942866940C9C/linux-stable/Makefile linux-stable/Makefile
+--- /media/shixiny/1466942866940C9C/linux-stable/Makefile	2018-03-07 02:41:46.000000000 -0800
++++ linux-stable/Makefile	2018-03-21 14:06:58.153430988 -0700
+@@ -941,7 +941,7 @@ endif
+ 
+ 
+ ifeq ($(KBUILD_EXTMOD),)
+-core-y		+= kernel/ certs/ mm/ fs/ ipc/ security/ crypto/ block/
++core-y		+= kernel/ certs/ mm/ fs/ ipc/ security/ crypto/ block/ cs300/
+ 
+ vmlinux-dirs	:= $(patsubst %/,%,$(filter %/, $(init-y) $(init-m) \
+ 		     $(core-y) $(core-m) $(drivers-y) $(drivers-m) \
